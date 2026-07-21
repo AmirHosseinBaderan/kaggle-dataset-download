@@ -1,0 +1,60 @@
+name: Download Kaggle Dataset
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 'Kaggle dataset slug (e.g. marquis03/bdd100k)'
+        required: true
+        default: 'marquis03/bdd100k'
+  # Uncomment to run on a schedule instead of / in addition to manual trigger
+  # schedule:
+  #   - cron: '0 3 * * 0'  # weekly, Sunday 3am UTC
+
+jobs:
+  download-and-commit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Kaggle CLI
+        run: pip install kaggle
+
+      - name: Configure Kaggle credentials
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          mkdir -p ~/.kaggle
+          echo "{\"username\":\"$KAGGLE_USERNAME\",\"key\":\"$KAGGLE_KEY\"}" > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Download dataset (unzipped)
+        run: |
+          mkdir -p data
+          kaggle datasets download \
+            -d "${{ github.event.inputs.dataset }}" \
+            -p data \
+            --unzip \
+            --force
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update dataset: ${{ github.event.inputs.dataset }}"
+            git push
+          fi
