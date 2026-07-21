@@ -1,5 +1,4 @@
 name: Download Kaggle Dataset
-
 on:
   workflow_dispatch:
     inputs:
@@ -7,9 +6,8 @@ on:
         description: 'Kaggle dataset slug (e.g. marquis03/bdd100k)'
         required: true
         default: 'marquis03/bdd100k'
-  # Uncomment to run on a schedule instead of / in addition to manual trigger
   # schedule:
-  #   - cron: '0 3 * * 0'  # weekly, Sunday 3am UTC
+  #   - cron: '0 3 * * 0'
 
 jobs:
   download-and-commit:
@@ -47,14 +45,51 @@ jobs:
             --unzip \
             --force
 
-      - name: Commit and push changes
+      - name: Commit in ~100MB batches
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update dataset: ${{ github.event.inputs.dataset }}"
-            git push
+
+          BATCH_LIMIT=$((100 * 1024 * 1024))  # 100MB in bytes
+          batch_size=0
+          batch_num=1
+          files_in_batch=()
+
+          # Only new/untracked/modified files under data/
+          while IFS= read -r -d '' file; do
+            file_size=$(stat -c%s "$file")
+
+            # if a single file already exceeds the limit, commit it alone
+            if [ "$file_size" -gt "$BATCH_LIMIT" ]; then
+              if [ ${#files_in_batch[@]} -gt 0 ]; then
+                git add "${files_in_batch[@]}"
+                git commit -m "Add dataset batch $batch_num (${{ github.event.inputs.dataset }})"
+                batch_num=$((batch_num + 1))
+                files_in_batch=()
+                batch_size=0
+              fi
+              git add "$file"
+              git commit -m "Add large file $(basename "$file") (${{ github.event.inputs.dataset }})"
+              continue
+            fi
+
+            files_in_batch+=("$file")
+            batch_size=$((batch_size + file_size))
+
+            if [ "$batch_size" -ge "$BATCH_LIMIT" ]; then
+              git add "${files_in_batch[@]}"
+              git commit -m "Add dataset batch $batch_num (${{ github.event.inputs.dataset }})"
+              batch_num=$((batch_num + 1))
+              files_in_batch=()
+              batch_size=0
+            fi
+          done < <(git -C . status --porcelain -z -- data | grep -z -E '^(\?\?|.M| M)' | cut -z -c4- | tr '\0' '\0')
+
+          # commit any remaining files under the limit
+          if [ ${#files_in_batch[@]} -gt 0 ]; then
+            git add "${files_in_batch[@]}"
+            git commit -m "Add dataset batch $batch_num (${{ github.event.inputs.dataset }})"
           fi
+
+          echo "Pushing all batch commits..."
+          git push
